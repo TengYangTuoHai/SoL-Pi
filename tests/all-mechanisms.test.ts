@@ -73,6 +73,7 @@ describe("SoL-Pi entrypoint", () => {
 		expect(pi.registeredTools.map((tool) => tool.name)).toEqual(["edit", "write", "obs_recall", "update_plan"]);
 		expect([...pi.handlers.keys()].sort()).toEqual([
 			"agent_settled",
+			"before_agent_start",
 			"before_provider_request",
 			"context",
 			"input",
@@ -91,14 +92,18 @@ describe("SoL-Pi entrypoint", () => {
 		const loader = vi.fn(() => ({ ...DEFAULT_CONFIG, observationPack: true }));
 		createSolPiExtension(loader)(pi.asExtensionApi());
 		expect([...pi.handlers.keys()]).toEqual(["session_start"]);
-
 		const ctx = fakeContext(pi.sessionManager);
 		await pi.emit("session_start", { type: "session_start" }, ctx);
 		await pi.emit("session_start", { type: "session_start" }, ctx);
 
 		expect(loader).toHaveBeenCalledOnce();
 		expect(pi.registeredTools.map((tool) => tool.name)).toEqual(["obs_recall"]);
-		expect([...pi.handlers.keys()].sort()).toEqual(["context", "session_start"]);
+		expect([...pi.handlers.keys()].sort()).toEqual([
+			"before_agent_start",
+			"context",
+			"session_start",
+			"session_tree",
+		]);
 	});
 
 	it("passes the configured reducer provider/model route into EPR", async () => {

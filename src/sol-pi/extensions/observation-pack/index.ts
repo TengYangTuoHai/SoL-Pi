@@ -17,6 +17,7 @@
  * Storage lives under the active Pi session directory.
  */
 
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
@@ -42,6 +43,37 @@ const RECALL_MAX_BYTES = 16 * 1024;
 const RECALL_MAX_LINES = 400;
 const RECALL_HEADER_RESERVE_BYTES = 512;
 const RECALL_HEADER_LINES = 2;
+const RECALL_TOOL_NAME = "obs_recall";
+
+/**
+ * Pi 0.86.1 added dynamic tool activation. When the runtime exposes it,
+ * `obs_recall` stays out of the prompt until the session actually needs it:
+ * it is activated one provider request before the first placeholder appears,
+ * and on session resume when the ledger already recorded placeholders.
+ * Older runtimes keep the tool eagerly available.
+ */
+type DynamicToolsApi = {
+	readonly getAllTools?: () => readonly { readonly name: string }[];
+	readonly getActiveTools?: () => readonly string[];
+	readonly setActiveTools?: (toolNames: readonly string[]) => void;
+};
+
+function supportsDynamicTools(api: unknown): api is DynamicToolsApi {
+	const candidate = api as DynamicToolsApi;
+	return (
+		typeof candidate.getAllTools === "function" &&
+		typeof candidate.getActiveTools === "function" &&
+		typeof candidate.setActiveTools === "function"
+	);
+}
+
+async function ledgerHasPlaceholder(ledgerPath: string): Promise<boolean> {
+	try {
+		return (await readFile(ledgerPath, "utf8")).includes('"event":"placeholder"');
+	} catch {
+		return false;
+	}
+}
 
 const RECALL_LIMITS = {
 	maxBytes: RECALL_MAX_BYTES - RECALL_HEADER_RESERVE_BYTES,
@@ -52,14 +84,59 @@ export function createObservationPackExtension(): ExtensionFactory {
 	return (pi: ExtensionAPI) => {
 		const sentCounts = new Map<string, number>();
 		const ledgers = new Map<string, Ledger>();
+		const dynamicTools = supportsDynamicTools(pi);
+		let recallWanted: boolean | undefined;
+		let activationBroken = false;
+		let activationWarned = false;
+		const ledgerPath = (ctx: ExtensionContext): string => join(runtimeRoot(ctx), "observation-pack", "ledger.jsonl");
 		const ledgerFor = (ctx: ExtensionContext): Ledger => {
 			const root = runtimeRoot(ctx);
 			let ledger = ledgers.get(root);
 			if (!ledger) {
-				ledger = createLedger(join(root, "observation-pack", "ledger.jsonl"));
+				ledger = createLedger(ledgerPath(ctx));
 				ledgers.set(root, ledger);
 			}
 			return ledger;
+		};
+
+		const setRecallActive = (active: boolean): void => {
+			if (!dynamicTools || activationBroken) return;
+			try {
+				const current = pi.getActiveTools();
+				const has = current.includes(RECALL_TOOL_NAME);
+				if (active === has) return;
+				pi.setActiveTools(
+					active ? [...current, RECALL_TOOL_NAME] : current.filter((name) => name !== RECALL_TOOL_NAME),
+				);
+			} catch (error) {
+				// Fail open to the eager behavior: the tool stays available wherever
+				// the runtime last left it and this mechanism stops managing it.
+				activationBroken = true;
+				if (!activationWarned) {
+					activationWarned = true;
+					console.warn(
+						`[sol-pi] Keeping obs_recall eagerly available because activation failed: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
+			}
+		};
+		const wantRecall = (): void => {
+			if (recallWanted === true) return;
+			recallWanted = true;
+			setRecallActive(true);
+		};
+		const syncRecallActivation = async (ctx: ExtensionContext): Promise<void> => {
+			if (!dynamicTools || activationBroken) return;
+			// Never downgrade a decision already made by an imminrent or existing
+			// placeholder, even if the session-start probe settles late.
+			if (recallWanted === true) {
+				setRecallActive(true);
+				return;
+			}
+			recallWanted = await ledgerHasPlaceholder(ledgerPath(ctx));
+			setRecallActive(recallWanted);
 		};
 
 		pi.registerTool({
@@ -134,6 +211,16 @@ export function createObservationPackExtension(): ExtensionFactory {
 			},
 		});
 
+		pi.on("session_start", (_event, ctx) => {
+			void syncRecallActivation(ctx);
+		});
+		pi.on("session_tree", (_event, ctx) => {
+			if (recallWanted === undefined) void syncRecallActivation(ctx);
+		});
+		pi.on("before_agent_start", () => {
+			if (recallWanted === true) setRecallActive(true);
+		});
+
 		pi.on("context", async (event, ctx: ExtensionContext) => {
 			const projected = [...event.messages];
 			const root = runtimeRoot(ctx);
@@ -171,12 +258,16 @@ export function createObservationPackExtension(): ExtensionFactory {
 							contentHash: observation.contentHash,
 						});
 						sentCounts.set(sendCountKey, previousSends + 1);
+						// The next request that exceeds the full-send budget will carry a
+						// placeholder, so obs_recall must be declared one request early.
+						if (previousSends + 1 >= FULL_SENDS) wantRecall();
 						continue;
 					}
 
 					const placeholder = placeholderFor(observation);
 					const placeholderTokens = estimateTokens(placeholder);
 					const removedTokens = Math.max(0, observation.tokens - placeholderTokens);
+					wantRecall();
 					await ledgerFor(ctx)({
 						event: "placeholder",
 						id: observation.id,

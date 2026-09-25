@@ -27,6 +27,8 @@ The queue covers only fused operations registered by this SoL-Pi instance. Exter
 
 ObservationPack changes only the messages projected through the public `context` event. Stored session history remains intact. Original bytes and the JSONL ledger live under the session-derived SoL-Pi directory.
 
+On Pi 0.86.1 and newer, `obs_recall` uses dynamic tool activation: it stays out of the prompt on sessions with nothing to recall, is activated one provider request before the first placeholder would appear, and stays active when a resumed session's ledger already recorded placeholders. Activation failures fail open to the eagerly available tool, and older runtimes without `getAllTools`/`getActiveTools`/`setActiveTools` keep the eager behavior.
+
 ## Evidence-Preserving Reducer
 
 The reducer calls the configured model through the public `ExtensionContext.modelRegistry`: `find()` resolves the reducer model and `complete()` performs the call with Pi-managed authentication. On runtimes whose registry does not expose `complete()`, the reducer reports the model as unavailable and preserves the original result. The reducer preserves the original result whenever the configured reducer model is unavailable or eligibility, model-call, schema, source-hash, exact-quote, size, or likely-secret checks fail.

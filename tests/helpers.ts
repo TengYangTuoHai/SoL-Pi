@@ -116,9 +116,25 @@ export class FakePi {
 		options: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" } | undefined;
 	}> = [];
 	readonly sessionManager: FakeSessionManager;
+	/** Active tool names once managed; null means every registered tool is active. */
+	activeTools: string[] | null = null;
+	readonly setActiveToolsCalls: string[][] = [];
 
 	constructor(sessionManager: FakeSessionManager = new FakeSessionManager()) {
 		this.sessionManager = sessionManager;
+	}
+
+	getAllTools(): Array<{ name: string }> {
+		return this.registeredTools.map((tool) => ({ name: tool.name }));
+	}
+
+	getActiveTools(): string[] {
+		return this.activeTools ?? this.registeredTools.map((tool) => tool.name);
+	}
+
+	setActiveTools(toolNames: string[]): void {
+		this.activeTools = [...toolNames];
+		this.setActiveToolsCalls.push([...toolNames]);
 	}
 
 	on(event: string, handler: unknown): void {

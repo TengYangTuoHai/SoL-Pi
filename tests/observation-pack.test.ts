@@ -350,9 +350,72 @@ describe("observation pack", () => {
 		expect(await project(observationPackPi(), receipt, sessionDir, 3)).toEqual([receiptText, receiptText, receiptText]);
 		const compoundText = resultText(compoundReceipt);
 		expect(await project(observationPackPi(), compoundReceipt, sessionDir, 3)).toEqual([
-			compoundText,
+				compoundText,
 			compoundText,
 			compoundText,
 		]);
+	});
+
+	it("keeps obs_recall inactive on a fresh session and activates it one request before the placeholder", async () => {
+		const sessionDir = await sessionRoot();
+		const pi = observationPackPi();
+		const context = fakeContext(sessionDir);
+
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await vi.waitFor(() => expect(pi.setActiveToolsCalls).toEqual([[]]));
+		expect(pi.getActiveTools()).toEqual([]);
+
+		const body = `head line\n${repeatPastThreshold("middle line\n")}tail line\n`;
+		const message = toolResult(body);
+		const projected: string[] = [];
+		for (let index = 0; index < 3; index += 1) {
+			const messages = await pi.emitContext([message], fakeContext(sessionDir));
+			projected.push(resultText(messages[0]!));
+		}
+
+		expect(projected[0]).toBe(body);
+		expect(projected[1]).toBe(body);
+		expect(projected[2]).not.toBe(body);
+		expect(pi.getActiveTools()).toContain("obs_recall");
+		const last = pi.setActiveToolsCalls.at(-1);
+		expect(last).toEqual(["obs_recall"]);
+	});
+
+	it("reactivates obs_recall when resuming a session whose ledger already has placeholders", async () => {
+		const sessionDir = await sessionRoot();
+		const ledgerPath = join(sessionDir, "sol-pi", SESSION_ID, "observation-pack", "ledger.jsonl");
+		await mkdir(join(sessionDir, "sol-pi", SESSION_ID, "observation-pack"), { recursive: true });
+		await writeFile(
+			ledgerPath,
+			`${JSON.stringify({ timestamp: new Date(0).toISOString(), event: "placeholder", id: "obs_x" })}\n`,
+			"utf8",
+		);
+
+		const pi = observationPackPi();
+		const context = fakeContext(sessionDir);
+		await pi.emit("session_start", { type: "session_start" }, context);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		// A resumed session with recorded placeholders keeps obs_recall active:
+		// no deactivation call is made (unlike a fresh session, which deactivates).
+		expect(pi.setActiveToolsCalls).toEqual([]);
+		expect(pi.getActiveTools()).toContain("obs_recall");
+	});
+
+	it("leaves obs_recall eagerly available when the runtime lacks dynamic tool activation", async () => {
+		const sessionDir = await sessionRoot();
+		const pi = new FakePi();
+		(pi as unknown as Record<string, unknown>).setActiveTools = undefined;
+		createObservationPackExtension()(pi.asExtensionApi());
+
+		const context = fakeContext(sessionDir);
+		await pi.emit("session_start", { type: "session_start" }, context);
+		const body = `head line\n${repeatPastThreshold("middle line\n")}tail line\n`;
+		const projected = await project(pi, toolResult(body), sessionDir, 3);
+
+		expect(projected[0]).toBe(body);
+		expect(projected[0]).toBe(projected[1]);
+		expect(projected[2]).not.toBe(body);
+		expect(pi.setActiveToolsCalls).toEqual([]);
 	});
 });
