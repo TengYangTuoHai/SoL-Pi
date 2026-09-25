@@ -4,22 +4,11 @@
  */
 
 import type { Api, AssistantMessage, Context, Model, ProviderStreamOptions } from "@earendil-works/pi-ai";
-import { complete as completeCompat } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { ArchiveObject } from "./archive.ts";
 import type { ReducerConfig } from "./config.ts";
 import { reducerInput, reducerInstructions } from "./receipt.ts";
 
-export type CompatComplete = typeof completeCompat;
-type ResolvedCompatAuth =
-	| {
-			readonly ok: true;
-			readonly apiKey?: string;
-			readonly baseUrl?: string;
-			readonly env?: Record<string, string>;
-			readonly headers?: Record<string, string | null>;
-	  }
-	| { readonly ok: false; readonly error: string };
 type CompatibleModelRegistry = {
 	readonly find?: (provider: string, modelId: string) => Model<Api> | undefined;
 	readonly complete?: (
@@ -27,7 +16,6 @@ type CompatibleModelRegistry = {
 		context: Context,
 		options?: ProviderStreamOptions,
 	) => Promise<AssistantMessage>;
-	readonly getApiKeyAndHeaders: (model: Model<Api>) => Promise<ResolvedCompatAuth>;
 };
 
 export interface NormalizedUsage {
@@ -64,11 +52,6 @@ function normalizedUsage(response: AssistantMessage): NormalizedUsage {
 		cacheWrite: response.usage.cacheWrite,
 		totalTokens: response.usage.totalTokens,
 	};
-}
-
-function stringHeaders(headers: Record<string, string | null> | undefined): Record<string, string> | undefined {
-	if (headers === undefined) return undefined;
-	return Object.fromEntries(Object.entries(headers).filter((entry): entry is [string, string] => entry[1] !== null));
 }
 
 function operationSignal(parent: AbortSignal | undefined, timeoutMs: number): {
@@ -110,10 +93,14 @@ export async function callReducer(
 	archive: ArchiveObject,
 	body: string,
 	context: ExtensionContext,
-	compatComplete: CompatComplete = completeCompat,
 ): Promise<ProviderResult> {
 	const registry = context.modelRegistry as unknown as CompatibleModelRegistry;
 	const model = resolveReducerModel(config, registry);
+	if (typeof registry.complete !== "function") {
+		throw new ReducerModelUnavailableError(
+			"Reducer model is unavailable: this Pi runtime exposes no ModelRegistry.complete()",
+		);
+	}
 	const operation = operationSignal(context.signal, config.timeoutMs);
 	try {
 		const requestContext = {
@@ -134,20 +121,7 @@ export async function callReducer(
 			timeoutMs: config.timeoutMs,
 		};
 		let response: AssistantMessage;
-		if (typeof registry.complete === "function") {
-			response = await registry.complete(model, requestContext, requestOptions);
-		} else {
-			const auth = await registry.getApiKeyAndHeaders(model);
-			if (!auth.ok) throw new Error(auth.error);
-			const legacyModel = auth.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
-			const headers = stringHeaders(auth.headers);
-			response = await compatComplete(legacyModel, requestContext, {
-				...requestOptions,
-				...(auth.apiKey === undefined ? {} : { apiKey: auth.apiKey }),
-				...(headers === undefined ? {} : { headers }),
-				...(auth.env === undefined ? {} : { env: auth.env }),
-			});
-		}
+		response = await registry.complete(model, requestContext, requestOptions);
 		return {
 			errorMessage: response.errorMessage,
 			model: response.model,

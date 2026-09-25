@@ -19,7 +19,7 @@ import {
 import { archiveBody } from "../src/sol-pi/extensions/evidence-preserving-reducer/archive.ts";
 import {
 	callReducer,
-	type CompatComplete,
+	ReducerModelUnavailableError,
 } from "../src/sol-pi/extensions/evidence-preserving-reducer/provider.ts";
 import { runtimeRoot } from "../src/sol-pi/runtime-paths.ts";
 import { FakePi, FakeSessionManager, fakeContext } from "./helpers.ts";
@@ -301,55 +301,22 @@ describe("evidence-preserving reducer", () => {
 		);
 	});
 
-	it("uses Pi-resolved authentication on a fork-shaped model registry", async () => {
+	it("reports an unavailable reducer model when the registry exposes no complete()", async () => {
 		const root = await storeRoot();
 		const config = loadReducerConfig(join(root, "session-runtime"));
-		const body = `ERROR fork compatibility\n${"diagnostic\n".repeat(400)}`;
+		const body = `ERROR registry compatibility\n${"diagnostic\n".repeat(400)}`;
 		const archive = await archiveBody(config.storeRoot, body);
-		let call: CapturedCall | undefined;
-		const completion = modelComplete(
-			body,
-			(input) => ({
-				schema: REDUCER_RECEIPT_SCHEMA,
-				source_sha256: sourceHash(input),
-				status: "failure",
-				uncertain: false,
-				evidence: [{ kind: "failure", quote: "ERROR fork compatibility" }],
-			}),
-			"stop",
-			(value) => {
-				call = value;
-			},
-		) as CompatComplete;
-		let authModel: Model<string> | undefined;
-		const context = fakeContext(new FakeSessionManager([], "fork-session", root), {
+		const context = fakeContext(new FakeSessionManager([], "legacy-session", root), {
 			model: ACTIVE_MODEL,
 			modelRegistry: {
 				find: (provider: string, modelId: string) =>
 					provider === REDUCER_MODEL.provider && modelId === REDUCER_MODEL.id ? REDUCER_MODEL : undefined,
-				getApiKeyAndHeaders: async (model: Model<string>) => {
-					authModel = model;
-					return {
-					ok: true,
-					apiKey: "fork-test-key",
-					headers: { "x-test-header": "fork" },
-					env: { TEST_REGION: "test" },
-					baseUrl: "https://fork.example.invalid/v1",
-					};
-				},
 			} as unknown as ExtensionContext["modelRegistry"],
 		});
 
-		const result = await callReducer(config, "pytest -q", true, archive, body, context, completion);
-
-		expect(result.ok).toBe(true);
-		expect(authModel).toBe(REDUCER_MODEL);
-		expect(call?.model.baseUrl).toBe("https://fork.example.invalid/v1");
-		expect(call?.options).toMatchObject({
-			apiKey: "fork-test-key",
-			headers: { "x-test-header": "fork" },
-			env: { TEST_REGION: "test" },
-		});
+		await expect(callReducer(config, "pytest -q", true, archive, body, context)).rejects.toBeInstanceOf(
+			ReducerModelUnavailableError,
+		);
 	});
 
 	it.each([false, true])(

@@ -12,7 +12,6 @@ import {
 	createWriteToolDefinition,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { complete as completeCompat } from "@earendil-works/pi-ai/compat";
 
 for (const [name, value] of Object.entries({
 	createBashToolDefinition,
@@ -20,9 +19,9 @@ for (const [name, value] of Object.entries({
 	createWriteToolDefinition,
 	getApiKeyAndHeaders: ModelRegistry.prototype.getApiKeyAndHeaders,
 	getAgentDir,
-	piAiCompatComplete: completeCompat,
 	sessionManagerGetSessionDir: SessionManager.prototype.getSessionDir,
 	sessionManagerGetSessionId: SessionManager.prototype.getSessionId,
+	modelRegistryComplete: ModelRegistry.prototype.complete,
 })) {
 	if (typeof value !== "function") throw new Error(`Missing public Pi API: ${name}`);
 }
